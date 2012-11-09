@@ -36,9 +36,11 @@ from nova.api import ec2
 from nova.api.ec2 import apirequest
 from nova.api.ec2 import ec2utils
 from nova import block_device
+from nova.openstack.common import policy as common_policy
 from nova import context
 from nova import exception
 from nova import flags
+from nova import policy
 from nova.openstack.common import timeutils
 from nova import test
 
@@ -614,3 +616,93 @@ class ApiEc2TestCase(test.TestCase):
 
         self.ec2.delete_security_group(security_group_name)
         self.ec2.delete_security_group(other_security_group_name)
+
+
+class ApiEc2PolicyTestCase(test.TestCase):
+    def setUp(self):
+        super(ApiEc2PolicyTestCase, self).setUp()
+        self.host = '127.0.0.1'
+        policy.reset()
+        # NOTE(vish): preload rules to circumvent reloading from file
+        policy.init()
+        rules = {
+            "true": [],
+            "ec2:stop_instances": [["role:admin"]],
+            "ec2:reboot_instances": [["role:nobody"]],
+            "ec2:create_key_pair": [],
+            "ec2:describe_key_pairs": []
+        }
+        common_policy.set_brain(common_policy.Brain(rules))
+
+    def expect_http(self, app, host=None, is_secure=False, api_version=None):
+        """Returns a new EC2 connection"""
+        self.ec2 = boto.connect_ec2(
+                aws_access_key_id='fake',
+                aws_secret_access_key='fake',
+                is_secure=False,
+                region=regioninfo.RegionInfo(None, 'test', self.host),
+                port=8773,
+                path='/services/Cloud')
+        if api_version:
+            self.ec2.APIVersion = api_version
+
+        self.mox.StubOutWithMock(self.ec2, 'new_http_connection')
+        self.http = FakeHttplibConnection(
+                app, '%s:8773' % (self.host), False)
+        # pylint: disable=E1103
+        if boto.Version >= '2':
+            self.ec2.new_http_connection(host or '%s:8773' % (self.host),
+                is_secure).AndReturn(self.http)
+        else:
+            self.ec2.new_http_connection(host, is_secure).AndReturn(self.http)
+        return self.http
+
+    def tearDown(self):
+        policy.reset()
+        super(ApiEc2PolicyTestCase, self).tearDown()
+
+    def test_ec2_policy_deny_all(self):
+        """Test an ec2 api that is denied to anyone"""
+        ctxt = context.RequestContext('fake', 'fake', roles=['admin'])
+        app = auth.InjectContext(ctxt, ec2.FaultWrapper(
+                ec2.RequestLogging(ec2.Requestify(ec2.Authorizer(ec2.Executor()
+                               ), 'nova.api.ec2.cloud.CloudController'))))
+        self.expect_http(app)
+        self.mox.ReplayAll()
+        self.assertRaises(boto_exc.EC2ResponseError,
+                self.ec2.reboot_instances, "i-00000005")
+
+    def test_ec2_policy_deny_mortal(self):
+        """Test an ec2 api that is denied to non-admins"""
+        ctxt = context.RequestContext('fake', 'fake', roles=['demo'])
+        app = auth.InjectContext(ctxt, ec2.FaultWrapper(
+                ec2.RequestLogging(ec2.Requestify(ec2.Authorizer(ec2.Executor()
+                               ), 'nova.api.ec2.cloud.CloudController'))))
+        self.expect_http(app)
+        self.mox.ReplayAll()
+        self.assertRaises(boto_exc.EC2ResponseError,
+                self.ec2.stop_instances, "i-00000005")
+
+    def test_ec2_policy_allow_admin(self):
+        """Test an admin-only ec2 api function to make sure it can be used"""
+        ctxt = context.RequestContext('fake', 'fake', roles=['admin'])
+        app = auth.InjectContext(ctxt, ec2.FaultWrapper(
+                ec2.RequestLogging(ec2.Requestify(ec2.Authorizer(ec2.Executor()
+                               ), 'nova.api.ec2.cloud.CloudController'))))
+        self.expect_http(app)
+        self.mox.ReplayAll()
+        self.assertRaises(boto_exc.EC2ResponseError,
+                self.ec2.stop_instances, "i-00000005")
+
+    def test_ec2_policy_undefined(self):
+        """Test an ec2 api function that is not restricted"""
+        ctxt = context.RequestContext('fake', 'fake', roles=['demo'])
+        app = auth.InjectContext(ctxt, ec2.FaultWrapper(
+                ec2.RequestLogging(ec2.Requestify(ec2.Authorizer(ec2.Executor()
+                               ), 'nova.api.ec2.cloud.CloudController'))))
+        self.expect_http(app)
+        self.mox.ReplayAll()
+        keyname = "".join(random.choice("sdiuisudfsdcnpaqwertasd")
+                          for x in range(random.randint(4, 8)))
+        self.ec2.create_key_pair(keyname)
+        self.assertTrue(self.ec2.get_key_pair(keyname))
