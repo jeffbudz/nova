@@ -56,9 +56,9 @@ QUOTAS = quota.QUOTAS
 def wrap_check_policy(func):
     """Check corresponding policy prior of wrapped method to execution"""
     @functools.wraps(func)
-    def wrapped(self, context, **kwargs):
+    def wrapped(self, context, *args, **kwargs):
         check_policy(context, func.__name__)
-        return func(self, context, **kwargs)
+        return func(self, context, *args, **kwargs)
     return wrapped
 
 
