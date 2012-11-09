@@ -36,12 +36,12 @@ from nova.api import ec2
 from nova.api.ec2 import apirequest
 from nova.api.ec2 import ec2utils
 from nova import block_device
-from nova.openstack.common import policy as common_policy
 from nova import context
 from nova import exception
 from nova import flags
-from nova import policy
+from nova.openstack.common import policy as common_policy
 from nova.openstack.common import timeutils
+from nova import policy
 from nova import test
 
 
